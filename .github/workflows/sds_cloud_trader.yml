@@ -2,8 +2,8 @@ name: SDS Algo 24/7 Cloud Auto-Trader
 
 on:
   schedule:
-    - cron: '*/5 * * * *' # Runs automatically in the cloud 24/7
-  workflow_dispatch:      # Allows 1-click manual cloud run anytime
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,12 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository & Cached Parameters
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5   # Updated to v5
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v5   # Updated to v5
         with:
-          node-version: '20'
+          node-version: '24'          # Updated to Node 24
 
       - name: Run 2,995-Bar Scanner & Bybit V5 Demo Executor
         env:
