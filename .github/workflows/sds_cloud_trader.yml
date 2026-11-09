@@ -1,0 +1,40 @@
+name: SDS Algo 24/7 Cloud Auto-Trader
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # Runs automatically in the cloud 24/7
+  workflow_dispatch:      # Allows 1-click manual cloud run anytime
+
+permissions:
+  contents: write
+
+jobs:
+  scan_and_trade:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository & Cached Parameters
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run 2,995-Bar Scanner & Bybit V5 Demo Executor
+        env:
+          TIMEFRAME_INTERVAL: "3"
+          BYBIT_DEMO_API_KEY: ${{ secrets.BYBIT_DEMO_API_KEY }}
+          BYBIT_DEMO_SECRET: ${{ secrets.BYBIT_DEMO_SECRET }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: node cloud_scanner.mjs
+
+      - name: Save Permanent 2,995-Bar (ZZ, Err) Cache to Repository
+        run: |
+          if [ -f opt_cache.json ]; then
+            git config user.name "SDS Cloud Bot"
+            git config user.email "bot@github.com"
+            git add opt_cache.json
+            git diff --staged --quiet || git commit -m "Update 2,995-bar optimized parameters [skip ci]"
+            git push
+          fi
