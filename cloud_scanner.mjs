@@ -1,14 +1,15 @@
 // ============================================================================
-// SDS ALGO — 24/7 GITHUB CLOUD SCANNER (CRASH-PROOF + CLOUDFLARE RELAY ROUTED)
+// SDS ALGO — 24/7 GITHUB CLOUD SCANNER (PRE-CONFIGURED WITH SDS-ALGO-2 RELAY)
+// Zero CPU Limits • Zero Subrequest Limits • Permanent opt_cache.json Memory
 // ============================================================================
 
 import fs from "fs";
 
 const CONFIG = {
-  // PASTE YOUR CLOUDFLARE WORKER URL BELOW (or set CF_RELAY_URL in GitHub Secrets):
+  // PRE-CONFIGURED WITH YOUR CLOUDFLARE WORKER RELAY URL:
   CF_RELAY_URL: (process.env.CF_RELAY_URL || "https://sds-algo-2.denethsds.workers.dev").trim().replace(/\/+$/, ""),
 
-  TIMEFRAME_INTERVAL: process.env.TIMEFRAME_INTERVAL || "3",
+  TIMEFRAME_INTERVAL: process.env.TIMEFRAME_INTERVAL || "3", // "3" for 3m testing, change to "15" for 15m
   MIN_CLOSED_TRADES: 8,
   TARGET_RR: 1.5,
   SL_BUFFER_PCT: 0.05,
@@ -19,7 +20,7 @@ const CONFIG = {
   LEVERAGE: 10,
   RISK_PER_TRADE_USD: 10,
   MAX_NOTIONAL_USD: 1500,
-  MIN_TP_SPOT_PCT: 0.25,
+  MIN_TP_SPOT_PCT: 0.25, // 0.25% for 3m testing (change to 0.65 for 15m)
 
   BYBIT_DEMO_API_KEY: (process.env.BYBIT_DEMO_API_KEY || "").trim(),
   BYBIT_DEMO_SECRET:  (process.env.BYBIT_DEMO_SECRET || "").trim(),
@@ -65,7 +66,6 @@ const ZZ_GRID  = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
 const ERR_GRID = [0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10];
 const CACHE_FILE = "./opt_cache.json";
 
-// Safe JSON fetcher that NEVER crashes with SyntaxError if an endpoint returns HTML
 async function safeFetchJson(url, options = {}) {
   try {
     const res = await fetch(url, {
@@ -84,10 +84,7 @@ async function safeFetchJson(url, options = {}) {
 }
 
 function buildBybitMarketUrl(bybitPath, queryString) {
-  if (CONFIG.CF_RELAY_URL && !CONFIG.CF_RELAY_URL.includes("PASTE-")) {
-    return `${CONFIG.CF_RELAY_URL}/?bybit_path=${encodeURIComponent(bybitPath)}&${queryString}`;
-  }
-  return `https://api.bybit.com${bybitPath}?${queryString}`;
+  return `${CONFIG.CF_RELAY_URL}/?bybit_path=${encodeURIComponent(bybitPath)}&${queryString}`;
 }
 
 function loadPersistentCache() {
@@ -146,7 +143,6 @@ async function fetchInstrumentSpecs() {
 
 async function fetchActivePositionsSet() {
   const set = new Set();
-  if (!CONFIG.CF_RELAY_URL || CONFIG.CF_RELAY_URL.includes("PASTE-")) return set;
   const res = await safeFetchJson(CONFIG.CF_RELAY_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -168,9 +164,6 @@ async function placeBybitBracketOrderViaRelay(sig, spec, openPositionsSet) {
   const symbol = sig.symbol;
   if (openPositionsSet.has(symbol)) {
     return { executed: false, error: `Skipped: Active position already open on ${symbol}` };
-  }
-  if (!CONFIG.CF_RELAY_URL || CONFIG.CF_RELAY_URL.includes("PASTE-")) {
-    return { executed: false, error: "CF_RELAY_URL not set in cloud_scanner.mjs" };
   }
 
   const side = sig.direction === "LONG" ? "Buy" : "Sell";
@@ -213,10 +206,10 @@ async function fetchClosedKlinePage(symbol, intervalStr, limit = 1000, endTime =
   const endParam = endTime ? `&end=${endTime}` : "";
   const qs = `category=linear&symbol=${symbol}&interval=${intervalStr}&limit=${limit}${endParam}`;
 
-  // Try direct Bybit first, then fallback to Cloudflare Relay if US runner is geoblocked
-  let json = await safeFetchJson(`https://api.bybit.com/v5/market/kline?${qs}`);
-  if (!json?.result?.list && CONFIG.CF_RELAY_URL && !CONFIG.CF_RELAY_URL.includes("PASTE-")) {
-    json = await safeFetchJson(buildBybitMarketUrl("/v5/market/kline", qs));
+  // Route through your Cloudflare Worker Relay to bypass US IP geoblocks
+  let json = await safeFetchJson(buildBybitMarketUrl("/v5/market/kline", qs));
+  if (!json?.result?.list) {
+    json = await safeFetchJson(`https://api.bybit.com/v5/market/kline?${qs}`);
   }
 
   const list = json?.result?.list || [];
@@ -434,7 +427,7 @@ async function main() {
   for (const sym of ALL_24_PAIRS) {
     const candles = await fetchFull2995Candles(sym, tf);
     if (candles.length < 100) {
-      console.log(`⚠️ ${sym}: Only ${candles.length} candles returned (check CF_RELAY_URL)`);
+      console.log(`⚠️ ${sym}: Only ${candles.length} candles returned (make sure Universal Proxy code is deployed on sds-algo-2.denethsds.workers.dev)`);
       continue;
     }
     scannedCount++;
