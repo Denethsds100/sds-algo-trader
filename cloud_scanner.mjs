@@ -1,13 +1,14 @@
 // ============================================================================
-// SDS ALGO — 24/7 GITHUB CLOUD SCANNER (100% IDENTICAL TO WEBPAGE LOGIC)
-// Zero CPU Limits • Zero Subrequest Limits • Permanent opt_cache.json Memory
+// SDS ALGO — 24/7 GITHUB CLOUD SCANNER (CRASH-PROOF + CLOUDFLARE RELAY ROUTED)
 // ============================================================================
 
 import fs from "fs";
-import crypto from "crypto";
 
 const CONFIG = {
-  TIMEFRAME_INTERVAL: process.env.TIMEFRAME_INTERVAL || "3", // "3" for 3m testing, change to "15" for 15m
+  // PASTE YOUR CLOUDFLARE WORKER URL BELOW (or set CF_RELAY_URL in GitHub Secrets):
+  CF_RELAY_URL: (process.env.CF_RELAY_URL || "https://sds-algo-2.denethsds.workers.dev").trim().replace(/\/+$/, ""),
+
+  TIMEFRAME_INTERVAL: process.env.TIMEFRAME_INTERVAL || "3",
   MIN_CLOSED_TRADES: 8,
   TARGET_RR: 1.5,
   SL_BUFFER_PCT: 0.05,
@@ -18,7 +19,7 @@ const CONFIG = {
   LEVERAGE: 10,
   RISK_PER_TRADE_USD: 10,
   MAX_NOTIONAL_USD: 1500,
-  MIN_TP_SPOT_PCT: 0.25, // 0.25% for 3m testing (use 0.65% for 15m)
+  MIN_TP_SPOT_PCT: 0.25,
 
   BYBIT_DEMO_API_KEY: (process.env.BYBIT_DEMO_API_KEY || "").trim(),
   BYBIT_DEMO_SECRET:  (process.env.BYBIT_DEMO_SECRET || "").trim(),
@@ -33,14 +34,67 @@ const ALL_24_PAIRS = [
   "ARBUSDT", "OPUSDT", "ORDIUSDT", "WLDUSDT", "AAVEUSDT", "TONUSDT"
 ];
 
+const FALLBACK_SPECS = {
+  BTCUSDT:    { dec: 1, qtyStep: "0.001", tickSize: "0.1",     minQty: 0.001 },
+  ETHUSDT:    { dec: 2, qtyStep: "0.01",  tickSize: "0.01",    minQty: 0.01 },
+  ADAUSDT:    { dec: 4, qtyStep: "1",     tickSize: "0.0001",  minQty: 1 },
+  LTCUSDT:    { dec: 2, qtyStep: "0.1",   tickSize: "0.01",    minQty: 0.1 },
+  AVAXUSDT:   { dec: 2, qtyStep: "0.1",   tickSize: "0.01",    minQty: 0.1 },
+  APTUSDT:    { dec: 3, qtyStep: "0.1",   tickSize: "0.001",   minQty: 0.1 },
+  SOLUSDT:    { dec: 2, qtyStep: "0.1",   tickSize: "0.01",    minQty: 0.1 },
+  BNBUSDT:    { dec: 2, qtyStep: "0.01",  tickSize: "0.01",    minQty: 0.01 },
+  XRPUSDT:    { dec: 4, qtyStep: "1",     tickSize: "0.0001",  minQty: 1 },
+  LINKUSDT:   { dec: 3, qtyStep: "0.1",   tickSize: "0.001",   minQty: 0.1 },
+  SUIUSDT:    { dec: 4, qtyStep: "1",     tickSize: "0.0001",  minQty: 1 },
+  INJUSDT:    { dec: 3, qtyStep: "0.1",   tickSize: "0.001",   minQty: 0.1 },
+  NEARUSDT:   { dec: 3, qtyStep: "0.1",   tickSize: "0.001",   minQty: 0.1 },
+  FETUSDT:    { dec: 4, qtyStep: "1",     tickSize: "0.0001",  minQty: 1 },
+  RENDERUSDT: { dec: 3, qtyStep: "0.1",   tickSize: "0.001",   minQty: 0.1 },
+  DOGEUSDT:   { dec: 5, qtyStep: "1",     tickSize: "0.00001", minQty: 1 },
+  SEIUSDT:    { dec: 4, qtyStep: "1",     tickSize: "0.0001",  minQty: 1 },
+  TIAUSDT:    { dec: 3, qtyStep: "0.1",   tickSize: "0.001",   minQty: 0.1 },
+  ARBUSDT:    { dec: 4, qtyStep: "0.1",   tickSize: "0.0001",  minQty: 0.1 },
+  OPUSDT:     { dec: 4, qtyStep: "0.1",   tickSize: "0.0001",  minQty: 0.1 },
+  ORDIUSDT:   { dec: 2, qtyStep: "0.01",  tickSize: "0.01",    minQty: 0.01 },
+  WLDUSDT:    { dec: 3, qtyStep: "0.1",   tickSize: "0.001",   minQty: 0.1 },
+  AAVEUSDT:   { dec: 2, qtyStep: "0.01",  tickSize: "0.01",    minQty: 0.01 },
+  TONUSDT:    { dec: 3, qtyStep: "0.1",   tickSize: "0.001",   minQty: 0.1 }
+};
+
 const ZZ_GRID  = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25];
 const ERR_GRID = [0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10];
 const CACHE_FILE = "./opt_cache.json";
 
+// Safe JSON fetcher that NEVER crashes with SyntaxError if an endpoint returns HTML
+async function safeFetchJson(url, options = {}) {
+  try {
+    const res = await fetch(url, {
+      ...options,
+      headers: { "User-Agent": "Mozilla/5.0", ...(options.headers || {}) }
+    });
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      return null;
+    }
+  } catch (_) {
+    return null;
+  }
+}
+
+function buildBybitMarketUrl(bybitPath, queryString) {
+  if (CONFIG.CF_RELAY_URL && !CONFIG.CF_RELAY_URL.includes("PASTE-")) {
+    return `${CONFIG.CF_RELAY_URL}/?bybit_path=${encodeURIComponent(bybitPath)}&${queryString}`;
+  }
+  return `https://api.bybit.com${bybitPath}?${queryString}`;
+}
+
 function loadPersistentCache() {
   try {
     if (fs.existsSync(CACHE_FILE)) {
-      return JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+      const raw = fs.readFileSync(CACHE_FILE, "utf8").trim();
+      if (raw.startsWith("{")) return JSON.parse(raw);
     }
   } catch (_) {}
   return { activeInterval: "", optParams: {}, executedSignalKeys: [] };
@@ -72,71 +126,37 @@ function formatByStep(value, stepStr, roundDown = true) {
 }
 
 async function fetchInstrumentSpecs() {
-  const specs = {};
-  try {
-    const res = await fetch("https://api.bybit.com/v5/market/instruments-info?category=linear&limit=1000");
-    if (res.ok) {
-      const json = await res.json();
-      for (const item of json?.result?.list || []) {
-        if (ALL_24_PAIRS.includes(item.symbol)) {
-          const tickSize = item.priceFilter?.tickSize || "0.01";
-          const qtyStep  = item.lotSizeFilter?.qtyStep || "0.1";
-          specs[item.symbol] = {
-            tickSize,
-            dec: countDecimalsFromStep(tickSize),
-            qtyStep,
-            minQty: parseFloat(item.lotSizeFilter?.minOrderQty || qtyStep)
-          };
-        }
-      }
+  const specs = { ...FALLBACK_SPECS };
+  const url = buildBybitMarketUrl("/v5/market/instruments-info", "category=linear&limit=1000");
+  const json = await safeFetchJson(url);
+  for (const item of json?.result?.list || []) {
+    if (ALL_24_PAIRS.includes(item.symbol)) {
+      const tickSize = item.priceFilter?.tickSize || specs[item.symbol]?.tickSize || "0.01";
+      const qtyStep  = item.lotSizeFilter?.qtyStep || specs[item.symbol]?.qtyStep || "0.1";
+      specs[item.symbol] = {
+        tickSize,
+        dec: countDecimalsFromStep(tickSize),
+        qtyStep,
+        minQty: parseFloat(item.lotSizeFilter?.minOrderQty || qtyStep)
+      };
     }
-  } catch (_) {}
-  return specs;
-}
-
-function signBybitV5(payloadStr, secret) {
-  return crypto.createHmac("sha256", secret).update(payloadStr).digest("hex");
-}
-
-async function bybitDemoCall(endpoint, method, payloadObj = {}) {
-  const apiKey = CONFIG.BYBIT_DEMO_API_KEY;
-  const secret = CONFIG.BYBIT_DEMO_SECRET;
-  if (!apiKey || !secret) return { retCode: -1, retMsg: "Missing Bybit Demo API Keys in GitHub Secrets" };
-
-  const timestamp = Date.now().toString();
-  const recvWindow = "10000";
-  let url = `https://api-demo.bybit.com${endpoint}`;
-  let bodyStr = "";
-
-  if (method === "GET") {
-    const qs = Object.entries(payloadObj)
-      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
-      .join("&");
-    if (qs) url += `?${qs}`;
-    bodyStr = qs;
-  } else {
-    bodyStr = JSON.stringify(payloadObj);
   }
-
-  const signature = signBybitV5(timestamp + apiKey + recvWindow + bodyStr, secret);
-  const res = await fetch(url, {
-    method,
-    headers: {
-      "X-BAPI-API-KEY": apiKey,
-      "X-BAPI-TIMESTAMP": timestamp,
-      "X-BAPI-RECV-WINDOW": recvWindow,
-      "X-BAPI-SIGN": signature,
-      "Content-Type": "application/json"
-    },
-    body: method === "POST" ? bodyStr : undefined
-  });
-  return await res.json();
+  return specs;
 }
 
 async function fetchActivePositionsSet() {
   const set = new Set();
-  const res = await bybitDemoCall("/v5/position/list", "GET", { category: "linear", settleCoin: "USDT", limit: 200 });
-  if (res.retCode === 0 && Array.isArray(res.result?.list)) {
+  if (!CONFIG.CF_RELAY_URL || CONFIG.CF_RELAY_URL.includes("PASTE-")) return set;
+  const res = await safeFetchJson(CONFIG.CF_RELAY_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      action: "get_positions",
+      apiKey: CONFIG.BYBIT_DEMO_API_KEY,
+      apiSecret: CONFIG.BYBIT_DEMO_SECRET
+    })
+  });
+  if (res?.retCode === 0 && Array.isArray(res.result?.list)) {
     for (const p of res.result.list) {
       if (parseFloat(p.size || "0") > 0) set.add(p.symbol);
     }
@@ -144,80 +164,46 @@ async function fetchActivePositionsSet() {
   return set;
 }
 
-async function placeBybitBracketOrder(sig, spec, openPositionsSet) {
+async function placeBybitBracketOrderViaRelay(sig, spec, openPositionsSet) {
   const symbol = sig.symbol;
   if (openPositionsSet.has(symbol)) {
     return { executed: false, error: `Skipped: Active position already open on ${symbol}` };
   }
+  if (!CONFIG.CF_RELAY_URL || CONFIG.CF_RELAY_URL.includes("PASTE-")) {
+    return { executed: false, error: "CF_RELAY_URL not set in cloud_scanner.mjs" };
+  }
 
-  const isBuy = sig.direction === "LONG";
-  const side  = isBuy ? "Buy" : "Sell";
-
+  const side = sig.direction === "LONG" ? "Buy" : "Sell";
   const slDist = Math.abs(sig.entry - sig.sl);
   const rawQty = slDist > 0 ? (CONFIG.RISK_PER_TRADE_USD / slDist) : spec.minQty;
   const maxQty = CONFIG.MAX_NOTIONAL_USD / sig.entry;
   let qtyStr = formatByStep(Math.max(spec.minQty, Math.min(rawQty, maxQty)), spec.qtyStep, true);
   if (parseFloat(qtyStr) < spec.minQty) qtyStr = formatByStep(spec.minQty, spec.qtyStep, false);
 
-  let finalSl = sig.sl;
-  let finalTp = sig.tp;
+  const slStr = formatByStep(sig.sl, spec.tickSize, false);
+  const tpStr = formatByStep(sig.tp, spec.tickSize, false);
 
-  // Live MarkPrice Guard to prevent Error [10001]
-  try {
-    const tRes = await fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${symbol}`);
-    if (tRes.ok) {
-      const tJson = await tRes.json();
-      const markPrice = parseFloat(tJson?.result?.list?.[0]?.markPrice || "0");
-      if (markPrice > 0) {
-        const slRatio = Math.max(0.003, Math.abs(sig.entry - sig.sl) / sig.entry);
-        const tpRatio = Math.max(0.0045, Math.abs(sig.tp - sig.entry) / sig.entry);
-        if (isBuy && (finalSl >= markPrice * 0.999 || finalTp <= markPrice * 1.001)) {
-          finalSl = markPrice * (1 - slRatio);
-          finalTp = markPrice * (1 + tpRatio);
-        } else if (!isBuy && (finalSl <= markPrice * 1.001 || finalTp >= markPrice * 0.999)) {
-          finalSl = markPrice * (1 + slRatio);
-          finalTp = markPrice * (1 - tpRatio);
-        }
-      }
-    }
-  } catch (_) {}
-
-  const slStr = formatByStep(finalSl, spec.tickSize, false);
-  const tpStr = formatByStep(finalTp, spec.tickSize, false);
-
-  await bybitDemoCall("/v5/position/set-leverage", "POST", {
-    category: "linear",
-    symbol,
-    buyLeverage: String(CONFIG.LEVERAGE),
-    sellLeverage: String(CONFIG.LEVERAGE)
+  const orderRes = await safeFetchJson(CONFIG.CF_RELAY_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      apiKey: CONFIG.BYBIT_DEMO_API_KEY,
+      apiSecret: CONFIG.BYBIT_DEMO_SECRET,
+      symbol,
+      side,
+      qty: qtyStr,
+      sl: slStr,
+      tp: tpStr,
+      leverage: CONFIG.LEVERAGE,
+      skipIfOpen: true
+    })
   });
 
-  const orderRes = await bybitDemoCall("/v5/order/create", "POST", {
-    category: "linear",
-    symbol,
-    side,
-    orderType: "Market",
-    qty: qtyStr,
-    timeInForce: "GTC",
-    stopLoss: slStr,
-    takeProfit: tpStr,
-    tpTriggerBy: "MarkPrice",
-    slTriggerBy: "MarkPrice"
-  });
-
-  if (orderRes.retCode !== 0) {
-    return { executed: false, error: `Bybit Error [${orderRes.retCode}]: ${orderRes.retMsg}` };
+  if (!orderRes) {
+    return { executed: false, error: "Relay returned empty/invalid response" };
   }
-
-  openPositionsSet.add(symbol);
-  return {
-    executed: true,
-    side,
-    qty: qtyStr,
-    orderId: orderRes.result?.orderId,
-    sl: slStr,
-    tp: tpStr
-  };
+  if (orderRes.executed) openPositionsSet.add(symbol);
+  return orderRes;
 }
 
 async function fetchClosedKlinePage(symbol, intervalStr, limit = 1000, endTime = null) {
@@ -225,11 +211,14 @@ async function fetchClosedKlinePage(symbol, intervalStr, limit = 1000, endTime =
   const barMs = tfMin * 60 * 1000;
   const currentBarOpenTime = Math.floor(Date.now() / barMs) * barMs;
   const endParam = endTime ? `&end=${endTime}` : "";
-  const url = `https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${intervalStr}&limit=${limit}${endParam}`;
+  const qs = `category=linear&symbol=${symbol}&interval=${intervalStr}&limit=${limit}${endParam}`;
 
-  const res = await fetch(url);
-  if (!res.ok) return [];
-  const json = await res.json();
+  // Try direct Bybit first, then fallback to Cloudflare Relay if US runner is geoblocked
+  let json = await safeFetchJson(`https://api.bybit.com/v5/market/kline?${qs}`);
+  if (!json?.result?.list && CONFIG.CF_RELAY_URL && !CONFIG.CF_RELAY_URL.includes("PASTE-")) {
+    json = await safeFetchJson(buildBybitMarketUrl("/v5/market/kline", qs));
+  }
+
   const list = json?.result?.list || [];
   return list
     .map(k => ({
@@ -411,7 +400,7 @@ async function sendTelegramAlert(sig, orderRes, tfLabel, dec) {
   if (!CONFIG.TG_BOT_TOKEN || !CONFIG.TG_CHAT_ID) return;
   const ordBlock = orderRes?.executed
     ? `\n🤖 BYBIT V5 DEMO ORDER PLACED:\n• ${orderRes.side} ${orderRes.qty} ${sig.symbol} (#${orderRes.orderId})\n• SL: ${orderRes.sl} | TP: ${orderRes.tp}`
-    : `\n⚠️ BYBIT DEMO ORDER: ${orderRes?.error || "Disabled"}`;
+    : `\n⚠️ BYBIT DEMO ORDER: ${orderRes?.error || "Skipped"}`;
 
   const text =
     `🚨 [GITHUB 24/7 CLOUD] SDS ${tfLabel} ${sig.direction}: ${sig.symbol}\n` +
@@ -420,7 +409,7 @@ async function sendTelegramAlert(sig, orderRes, tfLabel, dec) {
     `Entry: ${sig.entry.toFixed(dec)} | SL: ${sig.sl.toFixed(dec)} | TP: ${sig.tp.toFixed(dec)} (+${sig.tp10xPct}% @ 10x)` +
     ordBlock;
 
-  await fetch(`https://api.telegram.org/bot${CONFIG.TG_BOT_TOKEN}/sendMessage`, {
+  await safeFetchJson(`https://api.telegram.org/bot${CONFIG.TG_BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: CONFIG.TG_CHAT_ID, text })
@@ -440,10 +429,15 @@ async function main() {
   const specs = await fetchInstrumentSpecs();
   const openPositionsSet = await fetchActivePositionsSet();
   const executedSet = new Set(cache.executedSignalKeys || []);
+  let scannedCount = 0;
 
   for (const sym of ALL_24_PAIRS) {
     const candles = await fetchFull2995Candles(sym, tf);
-    if (candles.length < 500) continue;
+    if (candles.length < 100) {
+      console.log(`⚠️ ${sym}: Only ${candles.length} candles returned (check CF_RELAY_URL)`);
+      continue;
+    }
+    scannedCount++;
 
     const atr14 = computeAtr14Series(candles);
     let opt = cache.optParams[sym];
@@ -475,6 +469,8 @@ async function main() {
       cache.optParams[sym] = opt;
     }
 
+    console.log(`✅ ${sym} (${candles.length} bars): Opt ZZ=${opt.zz}, Err=${opt.err} (${opt.winRate}% WR | ${opt.wins}W/${opt.losses}L)`);
+
     const winningPivots = extractPivotEventsForZZ(candles, opt.zz);
     const liveEval = evaluateCombo(candles, winningPivots, opt.err, atr14);
 
@@ -484,19 +480,19 @@ async function main() {
         executedSet.add(dedupeKey);
         const sig = { symbol: sym, ...liveEval.lastBarSignal, ...opt };
         const spec = specs[sym] || { tickSize: "0.01", dec: 2, qtyStep: "0.1", minQty: 0.1 };
-        const orderRes = await placeBybitBracketOrder(sig, spec, openPositionsSet);
+        const orderRes = await placeBybitBracketOrderViaRelay(sig, spec, openPositionsSet);
         await sendTelegramAlert(sig, orderRes, tfLabel, spec.dec);
-        console.log(`Signal Executed: ${sym} ${sig.direction}`, orderRes);
+        console.log(`🚨 Signal Executed: ${sym} ${sig.direction}`, orderRes);
       }
     }
   }
 
   cache.executedSignalKeys = Array.from(executedSet);
   savePersistentCache(cache);
-  console.log(`✅ Completed 2,995-bar scan across all 24 pairs on ${tfLabel}`);
+  console.log(`🎯 Completed 2,995-bar scan across ${scannedCount}/${ALL_24_PAIRS.length} pairs on ${tfLabel}`);
 }
 
 main().catch(err => {
-  console.error(err);
+  console.error("Scanner error:", err);
   process.exit(1);
 });
