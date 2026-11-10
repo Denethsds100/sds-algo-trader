@@ -5,6 +5,11 @@ on:
     - cron: '*/5 * * * *'
   workflow_dispatch:
 
+# Prevents two cloud runs from overlapping and causing git push conflicts
+concurrency:
+  group: sds-cloud-trader-group
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -13,12 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository & Cached Parameters
-        uses: actions/checkout@v5   # Updated to v5
+        uses: actions/checkout@v5
 
       - name: Setup Node.js 24
-        uses: actions/setup-node@v5   # Updated to v5
+        uses: actions/setup-node@v5
         with:
-          node-version: '24'          # Updated to Node 24
+          node-version: '24'
 
       - name: Run 2,995-Bar Scanner & Bybit V5 Demo Executor
         env:
@@ -35,6 +40,9 @@ jobs:
             git config user.name "SDS Cloud Bot"
             git config user.email "bot@github.com"
             git add opt_cache.json
-            git diff --staged --quiet || git commit -m "Update 2,995-bar optimized parameters [skip ci]"
-            git push
+            if ! git diff --staged --quiet; then
+              git commit -m "Update 2,995-bar optimized parameters [skip ci]"
+              git pull --rebase origin main
+              git push origin HEAD:main
+            fi
           fi
